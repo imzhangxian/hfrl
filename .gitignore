@@ -1,0 +1,8 @@
+**/runs
+**/*.mp4
+**/*.txt
+**/*.pkl
+**/*.mlp
+**/*.numbers
+**/*.bak
+**/*.zip
