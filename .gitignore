@@ -6,3 +6,5 @@
 **/*.numbers
 **/*.bak
 **/*.zip
+.DS_Store
+
