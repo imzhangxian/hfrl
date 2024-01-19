@@ -135,47 +135,28 @@ def ppo(hype_params: dict, isTuning):
 
         #   calculate the gains and advantages (not GAE)
         #   if not the end of episode, then bootstrap with value function, otherwise 0
-        #   TODO need to calculate V(st) on V(st+1) (shift left 1 place). or will create huge bias.
+        #   need to calculate V(st) on V(st+1) (shift left 1 place). or will create huge bias.
         with torch.no_grad():
             for t in reversed(range(num_steps)):
                 if t < num_steps - 1:
                     gains[t] = rewards[t] + (1 - terminates[t]) * gamma * gains[t + 1]
-                else: 
+                else:
+                    # Quality of last episode: Qt = rt + gamma * Vt+1
                     last_value = agent.get_values(ob).flatten()
-                    gains[t] = rewards[t] + (1 - terminates[t]) * last_value # values[t]
+                    gains[t] = rewards[t] + gamma * (1 - terminates[t]) * last_value # values[t]
             advantages = gains - values
             # TODO also implement for GAEs
         
             # calculate the mean and std of gains
             shifted_terminates = torch.zeros_like(terminates)
-            shifted_terminates[1:] = terminates[:num_steps - 1]
-            shifted_terminates[0] = 1
-            raw_episodes_gains = (shifted_terminates * gains).flatten()
-            episodes_gains = []
-            for g in raw_episodes_gains:
-                if g != 0:
-                    episodes_gains.append(g.item())
-            t_episode_gains = torch.tensor(episodes_gains)
-            # print(f'The average gain of current batch is {t_episode_gains.mean()} +/- {t_episode_gains.std()}')
+            shifted_terminates[1:, :] = terminates[:num_steps - 1,:]
+            shifted_terminates[0, :] = 1
+            episodes_gains = (shifted_terminates * gains).flatten()
+            nonzero_gains = episodes_gains[episodes_gains.nonzero()]
+            print(f'The average gain of current batch is {nonzero_gains.mean()} +/- {nonzero_gains.std()}')
 
             succeeded = torch.floor((torch.Tensor(rewards) + 100) / 200).sum().item()
             print(f'{terminates.sum()} episodes terminated with {succeeded} successful landings')
-            # DEBUG only: output rewards and gains, check if gains are computed correctly
-            if DEBUG and succeeded > 0:
-                with open('rollout-rewards.txt', 'w') as f:
-                    f.write('Rewards: \n')
-                    for t in range(num_steps):
-                        for r in rewards[t]:
-                            f.write('{:.2f}'.format(r) + ', ')
-                        f.write('    |    ')
-                        for g in gains[t]:
-                            f.write('{:.2f}'.format(g) + ', ')
-                        f.write('    |    ')
-                        for tm in terminates[t]:
-                            f.write(f'{tm.item()}' + ', ')
-                        f.write('\n')
-                break
-            # print(obs, rewards, gains)
 
         #   randomly pick a mini batch from replay buffer
         mb_indices = [i for i in range(num_steps)]
@@ -217,7 +198,7 @@ def ppo(hype_params: dict, isTuning):
                 optimizer.step()
     return agent
 
-def evaluate(agent, hype_params, isTuning):
+def evaluate(agent: nn.Module, hype_params, isTuning):
     env_id = hype_params["env_id"]
     gamma = hype_params["gamma"]
     evaluation = INIT_GAIN
@@ -227,9 +208,8 @@ def evaluate(agent, hype_params, isTuning):
     eval_env = gym.make(env_id, render_mode='rgb_array')
     gains = []
     frames_list = []
-    episodes = []
     rewards = []
-    terminated = False
+    agent.eval()
     for _ in range(eval_rounds):
         # print(f'evaluate round {round}')
         gain = 0
@@ -237,18 +217,14 @@ def evaluate(agent, hype_params, isTuning):
         for t in range(eval_max_steps):
             if not isTuning:
                 frames_list.append(eval_env.render())
-            a, _, _, _ = agent.get_action_value(torch.Tensor(s).to(device))
+            with torch.no_grad():
+                a, _, _, _ = agent.get_action_value(torch.Tensor(s).to(device))
             s, r, done, _, _ = eval_env.step(a.cpu().numpy())
-            gain = r + gamma * gain
+            gain += r * gamma
             rewards.append('{:.2f}'.format(r))
             if done:
-                episodes.append(t)
-                terminated = True
                 break
-        if terminated:
-            terminated = False
-        else:
-            episodes.append(-1)
+
         gains.append(gain)
     t_gains = torch.Tensor(gains)
     evaluation = t_gains.mean()
