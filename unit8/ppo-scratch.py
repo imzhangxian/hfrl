@@ -95,7 +95,9 @@ if __name__ == '__main__':
 
             print(f'start training with batch {batch} / {num_batches} w/ learning rate {lrnow} ... ')
             #  rollout num_steps and store the trajectory into replay buffer
-            # TODO i think the whole rollout could be put in torch.no_grad(). can verify later
+            # QUESTION: i think the whole rollout could be put in torch.no_grad(). can verify later
+            # A: rollout is to compute training dataset (action likelihood under old policy and target value)
+            #    which don't have learnable parameters
             ob, _ = envs.reset()
             ob = torch.Tensor(ob).to(device)
             for step in range(num_steps):
@@ -118,8 +120,9 @@ if __name__ == '__main__':
                 for t in reversed(range(num_steps)):
                     if t < num_steps - 1:
                         gains[t] = rewards[t] + (1 - terminates[t]) * gamma * gains[t + 1]
-                    else: 
-                        gains[t] = rewards[t] + (1 - terminates[t]) * values[t]
+                    else:
+                        last_value = agent.get_values(ob).flatten()
+                        gains[t] = rewards[t] + (1 - terminates[t]) * last_value # values[t]
                 advantages = gains - values
                 # TODO also implement for GAEs
             
