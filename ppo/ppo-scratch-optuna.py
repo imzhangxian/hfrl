@@ -71,9 +71,9 @@ def objective(trial: optuna.Trial):
     hype_params["clip_coef"] = trial.suggest_float("clip_coef", 0.1, 1) # 0.2
     hype_params["ent_coef"] = trial.suggest_float("ent_coef", 0.01, 1) # 0.03
     hype_params["vf_coef"] = trial.suggest_float("vf_coef", 0.1, 0.8) # 0.5
-    agent = ppo(hype_params, True)
-    evaluation, deviation, _ = evaluate(agent, hype_params, True)
-    return evaluation - deviation
+    _, total_gains = ppo(hype_params, True)
+    evaluation = total_gains.mean() - total_gains.std()
+    return evaluation
 
 def ppo(hype_params: dict, isTuning):
     env_id = hype_params["env_id"]
@@ -109,7 +109,10 @@ def ppo(hype_params: dict, isTuning):
 
     # training loop
     num_batches = int(max_steps // (num_steps * n_envs))
+    total_gains = None
     for batch in range(num_batches):
+        # for each batch, rollout training data into replay buffer with current policy, and 
+        #  train n_epochs times with this replay buffers
         frac = 1
         if anneal_lr:
             frac = 1.0 - (batch - 1.0) / num_batches
@@ -151,16 +154,21 @@ def ppo(hype_params: dict, isTuning):
             shifted_terminates = torch.zeros_like(terminates)
             shifted_terminates[1:, :] = terminates[:num_steps - 1,:]
             shifted_terminates[0, :] = 1
-            episodes_gains = (shifted_terminates * gains).flatten()
-            nonzero_gains = episodes_gains[episodes_gains.nonzero()]
-            print(f'The average gain of current batch is {nonzero_gains.mean()} +/- {nonzero_gains.std()}')
-
+            batch_gains = (shifted_terminates * gains).flatten()
+            nonzero_batch_gains = batch_gains[batch_gains.nonzero()]
             succeeded = torch.floor((torch.Tensor(rewards) + 100) / 200).sum().item()
-            print(f'{terminates.sum()} episodes terminated with {succeeded} successful landings')
+            print(f'Batch: {batch}/{num_batches}, Success: {succeeded} / {nonzero_batch_gains.nelement()}, \
+                    Return: {nonzero_batch_gains.mean()} +/- {nonzero_batch_gains.std()}')
+            if isTuning:
+                if total_gains == None:
+                    total_gains = nonzero_batch_gains
+                else: 
+                    torch.cat((total_gains, nonzero_batch_gains))
 
         #   randomly pick a mini batch from replay buffer
         mb_indices = [i for i in range(num_steps)]
         np.random.shuffle(mb_indices)
+        # train n_epochs for each batch
         for _ in range(n_epochs):
             for i in mb_indices:
                 # TODO add mini batch support later; single example training here
@@ -196,7 +204,7 @@ def ppo(hype_params: dict, isTuning):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-    return agent
+    return agent, total_gains
 
 def evaluate(agent: nn.Module, hype_params, isTuning):
     env_id = hype_params["env_id"]
@@ -263,7 +271,7 @@ if __name__ == '__main__':
     final_params = trial.params
     final_params["env_id"] = ENV_ID
     final_params["evaluation"] = INIT_GAIN
-    agent = ppo(trial.params, False)
+    agent, _ = ppo(trial.params, False)
     print("Evaluating model ... ")
     evaluation, deviation, frames = evaluate(agent, final_params, False)
     print("Final average gain {} +/- {}".format(evaluation, deviation))
