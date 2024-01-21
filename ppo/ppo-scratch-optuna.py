@@ -1,3 +1,5 @@
+import argparse
+from distutils.util import strtobool
 import numpy as np
 import torch
 import torch.nn as nn
@@ -256,33 +258,48 @@ def recordVideo(filename, frames):
     video.release()
 
 if __name__ == '__main__':
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=10)
-    
-    print("Number of finished trials: ", len(study.trials))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--optimze-hype-params", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+                        help="if toggled, this experiment will be tracked with Weights and Biases")
+    args = parser.parse_args()
+    final_params = None
+    if args.optimze_hype_params:
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective, n_trials=10)
+        
+        print("Number of finished trials: ", len(study.trials))
 
-    print("Best trial:")
-    trial = study.best_trial
+        print("Best trial:")
+        trial = study.best_trial
 
-    print("  Value: ", trial.value)
+        print("  Value: ", trial.value)
+
+        final_params = trial.params
+    else:
+        final_params = {}
+        final_params["num_steps"] = 768
+        final_params["n_envs"] = 4
+        final_params["gamma"] = 0.95
+        final_params["mini_batch"] = 6
+        final_params["n_epochs"] = 8
+        final_params["learning_rate"] = 1e-3
+        final_params["clip_coef"] = 0.2
+        final_params["ent_coef"] = 0.3
+        final_params["vf_coef"] = 0.5
 
     print("  Params: ")
-    for key, value in trial.params.items():
+    for key, value in final_params.items():
         print("    {}: {}".format(key, value))
 
-    print("  User attrs:")
-    for key, value in trial.user_attrs.items():
-        print("    {}: {}".format(key, value))
-    
     print("Start training with optimzed hype parameters ... ")
-    final_params = trial.params
-    final_params["env_id"] = ENV_ID
-    final_params["evaluation"] = INIT_GAIN
-    agent, _ = ppo(trial.params, False)
-    print("Evaluating model ... ")
-    evaluation, deviation, frames = evaluate(agent, final_params, False)
-    print("Final average gain {} +/- {}".format(evaluation, deviation))
+    if final_params != None:
+        final_params["env_id"] = ENV_ID
+        # final_params["evaluation"] = INIT_GAIN
+        agent, _ = ppo(final_params, False)
+        print("Evaluating model ... ")
+        evaluation, deviation, frames = evaluate(agent, final_params, False)
+        print("Final average gain {} +/- {}".format(evaluation, deviation))
 
-    path = os.path.realpath(__file__)
-    dir = os.path.dirname(path)
-    recordVideo(dir + os.path.sep + ENV_ID + '.mp4', frames)
+        path = os.path.realpath(__file__)
+        dir = os.path.dirname(path)
+        recordVideo(dir + os.path.sep + ENV_ID + '.mp4', frames)
