@@ -217,7 +217,7 @@ def ppo(hype_params: dict, isTuning):
 
 def evaluate(agent: nn.Module, hype_params, isTuning):
     env_id = hype_params["env_id"]
-    gamma = hype_params["gamma"]
+    # gamma = hype_params["gamma"]
     evaluation = INIT_GAIN
     # evaluate the model
     eval_max_steps = hype_params["num_steps"]
@@ -237,7 +237,8 @@ def evaluate(agent: nn.Module, hype_params, isTuning):
             with torch.no_grad():
                 a, _, _, _ = agent.get_action_value(torch.Tensor(s).to(device))
             s, r, done, _, _ = eval_env.step(a.cpu().numpy())
-            gain = r + gain * gamma
+            # gain = r + gain * gamma
+            gain += r # for lunar lander, the score is accumulated without decaying
             rewards.append('{:.2f}'.format(r))
             if done:
                 break
@@ -277,15 +278,15 @@ if __name__ == '__main__':
         final_params = trial.params
     else:
         final_params = {}
-        final_params["num_steps"] = 768
+        final_params["num_steps"] = 512
         final_params["n_envs"] = 4
-        final_params["gamma"] = 0.95
-        final_params["mini_batch"] = 6
+        final_params["gamma"] = 0.993 # 0.993, 0.995
+        final_params["mini_batch"] = 8 # 6
         final_params["n_epochs"] = 8
         final_params["learning_rate"] = 1e-3
-        final_params["clip_coef"] = 0.2
-        final_params["ent_coef"] = 0.3
-        final_params["vf_coef"] = 0.5
+        final_params["clip_coef"] = 0.1
+        final_params["ent_coef"] = 0.05 # 0.1, 0.05, 0.03
+        final_params["vf_coef"] = 0.4
 
     print("  Params: ")
     for key, value in final_params.items():
