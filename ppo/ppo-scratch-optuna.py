@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
+import math
 import gymnasium as gym
 import cv2
 import os
@@ -63,14 +64,15 @@ def objective(trial: optuna.Trial):
     hype_params["env_id"] = ENV_ID
 
     # mini_batch_size = 4
-    hype_params["num_steps"] = trial.suggest_int("num_steps", 256, 1024) # 512 # 128, 256
+    hype_params["num_steps"] = trial.suggest_int("num_steps", 1000, 2000) # 512 # 128, 256
     hype_params["n_envs"] = trial.suggest_int("n_envs", 4, 4) # 4
-    hype_params["gamma"] = trial.suggest_float("gamma", 0.9, 0.999) # 4
-    hype_params["n_epochs"] = trial.suggest_int("n_epochs", 6, 12) # 8
+    hype_params["gamma"] = trial.suggest_float("gamma", 0.95, 0.999) # 4
+    hype_params["mini_batch"] = trial.suggest_int("mini_batch", 6, 6) # 6
+    hype_params["n_epochs"] = trial.suggest_int("n_epochs", 4, 4) # 8
     hype_params["learning_rate"] = trial.suggest_float("learning_rate", 5e-4, 5e-3) # 1e-3
-    hype_params["clip_coef"] = trial.suggest_float("clip_coef", 0.1, 1) # 0.2
-    hype_params["ent_coef"] = trial.suggest_float("ent_coef", 0.01, 1) # 0.03
-    hype_params["vf_coef"] = trial.suggest_float("vf_coef", 0.1, 0.8) # 0.5
+    hype_params["clip_coef"] = trial.suggest_float("clip_coef", 0.1, 0.3) # 0.2
+    hype_params["ent_coef"] = trial.suggest_float("ent_coef", 0.2, 0.4) # 0.03
+    hype_params["vf_coef"] = trial.suggest_float("vf_coef", 0.4, 0.6) # 0.5
     _, total_gains = ppo(hype_params, True)
     evaluation = total_gains.mean() - total_gains.std()
     return evaluation
@@ -80,6 +82,7 @@ def ppo(hype_params: dict, isTuning):
     learning_rate = hype_params["learning_rate"]
     n_envs = hype_params["n_envs"]
     gamma = hype_params["gamma"]
+    mini_batch = hype_params["mini_batch"]
     num_steps = hype_params["num_steps"]
     max_steps = TUNING_STEPS if isTuning else MAX_STEPS
     n_epochs = hype_params["n_epochs"]
@@ -168,23 +171,25 @@ def ppo(hype_params: dict, isTuning):
         #   randomly pick a mini batch from replay buffer
         mb_indices = [i for i in range(num_steps)]
         np.random.shuffle(mb_indices)
+        num_mbatches = math.ceil(num_steps / mini_batch)
         # train n_epochs for each batch
         for _ in range(n_epochs):
-            for i in mb_indices:
-                # TODO add mini batch support later; single example training here
-                # batch = mb_indices[b * mini_batch_size : (b + 1) * mini_batch_size]
+            for b in range(num_mbatches):
+                # pick a mini batch
+                # print(f'train with mini-batch {b}')
+                batch = mb_indices[b * mini_batch : (b + 1) * mini_batch]
 
                 #   calculate the probability of action under new policy
                 #    - by passing the observation through the actor-critic network
-                a = actions[i]
-                _, a_logprob, a_entropy, v = agent.get_action_value(obs[i], a)
+                a = actions[batch]
+                _, a_logprob, a_entropy, v = agent.get_action_value(obs[batch], a)
 
                 #   calculate the portion of probabilities of action under new and old policy
-                p_theta_log = a_logprob - action_probs[i]
+                p_theta_log = a_logprob - action_probs[batch]
                 p_theta = torch.exp(p_theta_log)
 
                 #   calculate the clipped policy surrogate objective function
-                adv = advantages[i]
+                adv = advantages[batch]
                 loss_cp1 = - adv * p_theta
                 loss_cp2 = - adv * torch.clamp(p_theta, 1 - clip_coef, 1 + clip_coef)
 
@@ -192,7 +197,9 @@ def ppo(hype_params: dict, isTuning):
                 pg_loss = torch.max(loss_cp1, loss_cp2).mean()
 
                 #   calculate the value loss
-                v_loss = ((v - gains[i]) ** 2).mean() / 2
+                g = gains[batch]
+                v = v.view(g.shape)
+                v_loss = ((v - g) ** 2).mean() / 2
 
                 #   entropy loss
                 entropy_loss = a_entropy.mean()
@@ -211,7 +218,7 @@ def evaluate(agent: nn.Module, hype_params, isTuning):
     gamma = hype_params["gamma"]
     evaluation = INIT_GAIN
     # evaluate the model
-    eval_max_steps = 500
+    eval_max_steps = hype_params["num_steps"]
     eval_rounds = 10
     eval_env = gym.make(env_id, render_mode='rgb_array')
     gains = []
@@ -228,7 +235,7 @@ def evaluate(agent: nn.Module, hype_params, isTuning):
             with torch.no_grad():
                 a, _, _, _ = agent.get_action_value(torch.Tensor(s).to(device))
             s, r, done, _, _ = eval_env.step(a.cpu().numpy())
-            gain += r * gamma
+            gain = r + gain * gamma
             rewards.append('{:.2f}'.format(r))
             if done:
                 break
