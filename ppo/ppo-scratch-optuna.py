@@ -69,6 +69,8 @@ def objective(trial: optuna.Trial):
     hype_params["num_steps"] = trial.suggest_int("num_steps", 1000, 2000) # 512 # 128, 256
     hype_params["n_envs"] = trial.suggest_int("n_envs", 4, 4) # 4
     hype_params["gamma"] = trial.suggest_float("gamma", 0.95, 0.999) # 4
+    hype_params["gae"] = trial.suggest_categorical("gae",["GAE", "Monte-Carlo"])
+    hype_params["gae_lambda"] = trial.suggest_float("gae_lambda", 0.9, 0.999)
     hype_params["mini_batch"] = trial.suggest_int("mini_batch", 6, 6) # 6
     hype_params["n_epochs"] = trial.suggest_int("n_epochs", 4, 4) # 8
     hype_params["learning_rate"] = trial.suggest_float("learning_rate", 5e-4, 5e-3) # 1e-3
@@ -84,6 +86,8 @@ def ppo(hype_params: dict, isTuning):
     learning_rate = hype_params["learning_rate"]
     n_envs = hype_params["n_envs"]
     gamma = hype_params["gamma"]
+    gae = hype_params["gae"]
+    gae_lambda = hype_params["gae_lambda"]
     mini_batch = hype_params["mini_batch"]
     num_steps = hype_params["num_steps"]
     max_steps = TUNING_STEPS if isTuning else MAX_STEPS
@@ -145,15 +149,28 @@ def ppo(hype_params: dict, isTuning):
         #   if not the end of episode, then bootstrap with value function, otherwise 0
         #   need to calculate V(st) on V(st+1) (shift left 1 place). or will create huge bias.
         with torch.no_grad():
-            for t in reversed(range(num_steps)):
-                if t < num_steps - 1:
-                    gains[t] = rewards[t] + (1 - terminates[t]) * gamma * gains[t + 1]
-                else:
-                    # Quality of last episode: Qt = rt + gamma * Vt+1
-                    last_value = agent.get_values(ob).flatten()
-                    gains[t] = rewards[t] + gamma * (1 - terminates[t]) * last_value # values[t]
-            advantages = gains - values
-            # TODO also implement for GAEs
+            if "GAE" == gae:
+                # also implement for GAEs: n step TD lambda
+                advantages = torch.zeros_like(rewards).to(device)
+                lastgaelam = 0
+                for t in reversed(range(args.num_steps)):
+                    if t == args.num_steps - 1:
+                        nextvalues = agent.get_values(ob).flatten()
+                    else:
+                        nextvalues = values[t + 1]
+                    delta = rewards[t] + gamma * nextvalues * (1 - terminates[t]) - values[t]
+                    advantages[t] = lastgaelam = delta + gamma * gae_lambda * (1 - terminates[t]) * lastgaelam
+                gains = advantages + values
+            else:
+                # implementation Monte Carlo - non bootstrap
+                for t in reversed(range(num_steps)):
+                    if t < num_steps - 1:
+                        gains[t] = rewards[t] + (1 - terminates[t]) * gamma * gains[t + 1]
+                    else:
+                        # Quality of last episode: Qt = rt + gamma * Vt+1
+                        last_value = agent.get_values(ob).flatten()
+                        gains[t] = rewards[t] + gamma * (1 - terminates[t]) * last_value # values[t]
+                advantages = gains - values
         
             # calculate the mean and std of gains
             shifted_terminates = torch.zeros_like(terminates)
@@ -262,6 +279,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--optimze-hype-params", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="if toggled, this experiment will be tracked with Weights and Biases")
+    parser.add_argument("--gae", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+                        help="if toggled, this experiment will be tracked with Weights and Biases")
+    parser.add_argument("--gae-lambda", type=float, default=0.95,
+                        help="the lambda for the general advantage estimation")
     args = parser.parse_args()
     final_params = None
     if args.optimze_hype_params:
@@ -281,6 +302,8 @@ if __name__ == '__main__':
         final_params["num_steps"] = 512
         final_params["n_envs"] = 4
         final_params["gamma"] = 0.993 # 0.993, 0.995
+        final_params["gae"] = args.gae
+        final_params["gae_lambda"] = args.gae_lambda
         final_params["mini_batch"] = 8 # 6
         final_params["n_epochs"] = 8
         final_params["learning_rate"] = 1e-3
@@ -299,7 +322,7 @@ if __name__ == '__main__':
         agent, _ = ppo(final_params, False)
         print("Evaluating model ... ")
         evaluation, deviation, frames = evaluate(agent, final_params, False)
-        print("Final average gain {} +/- {}".format(evaluation, deviation))
+        print("Final average score {} +/- {}".format(evaluation, deviation))
 
         path = os.path.realpath(__file__)
         dir = os.path.dirname(path)
