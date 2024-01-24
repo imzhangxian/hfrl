@@ -33,5 +33,6 @@ if __name__ == '__main__':
 
     if len(obs) < MAX_STEPS:
         for ob in obs[-3:]:
-            print(ob)
+            (_, a, r, _, t) = ob
+            print(f'from st0, take action {a}, get reward {r}, to st1, terminated = {t}')
 
